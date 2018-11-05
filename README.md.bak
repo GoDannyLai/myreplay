@@ -8,7 +8,7 @@
   ./myreplay -j genlog.json -C 1000000 genlog.log
   
   从上面生成的json文件读入应用到mysql:
-  ./myreplay -H 127.0.0.1 -P 3307 -u xx -p xx -d db1 -s dml -c utf8 -i 5 -t 2 -r 600 -J genlog.json.1
+	./myreplay -H 127.0.0.1 -P 3307 -u xx -p xx -d db1 -s dml -c utf8 -i 5 -t 2 -r 600 -J genlog.json.1
 	
   自行调整相应的参数
 # 限制
