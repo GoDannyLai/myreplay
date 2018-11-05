@@ -7,25 +7,34 @@ import (
 func main() {
 	gLogger.CreateNewRawLogger()
 	gConfCmd.Parse()
-	dbCon := gConfCmd.CreateMySqlConnection()
+	if gConfCmd.JsonFile != "" {
+		// just parse general log and output sqls into json file
+		ReadMyGeneralLogAndGenJson(gConfCmd)
 
-	var (
-		sqlChan   chan *SqlInfo     = make(chan *SqlInfo, 2*gConfCmd.Threads)
-		statsChan chan *RunningInfo = make(chan *RunningInfo, 4*gConfCmd.Threads)
-		sqlWait   sync.WaitGroup    = sync.WaitGroup{}
-		stsWait   sync.WaitGroup    = sync.WaitGroup{}
-	)
+	} else {
+		dbCon := gConfCmd.CreateMySqlConnection()
 
-	StartReplayThreads(gConfCmd, sqlChan, statsChan, dbCon, &sqlWait)
+		var (
+			sqlChan   chan *SqlInfo     = make(chan *SqlInfo, 2*gConfCmd.Threads)
+			statsChan chan *RunningInfo = make(chan *RunningInfo, 4*gConfCmd.Threads)
+			sqlWait   sync.WaitGroup    = sync.WaitGroup{}
+			stsWait   sync.WaitGroup    = sync.WaitGroup{}
+		)
 
-	go ReadMyGeneralLog(gConfCmd, sqlChan, dbCon)
+		StartReplayThreads(gConfCmd, sqlChan, statsChan, dbCon, &sqlWait)
 
-	stsWait.Add(1)
-	go CalculateStats(statsChan, gConfCmd.Interval, &stsWait)
+		if gConfCmd.IfInputJsonFile {
+			go ReadFromJsonFile(gConfCmd, sqlChan)
+		} else {
+			go ReadMyGeneralLog(gConfCmd, sqlChan, dbCon)
+		}
 
-	sqlWait.Wait()
-	close(statsChan)
+		stsWait.Add(1)
+		go CalculateStats(statsChan, gConfCmd.Interval, &stsWait)
 
-	stsWait.Wait()
+		sqlWait.Wait()
+		close(statsChan)
 
+		stsWait.Wait()
+	}
 }

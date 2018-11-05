@@ -5,6 +5,7 @@ import (
 	"dannytools/constvar"
 	"dannytools/ehand"
 	"dannytools/logging"
+	"dannytools/myjson"
 	"database/sql"
 	"fmt"
 	"os"
@@ -34,6 +35,153 @@ type RunningInfo struct {
 	IfErr     bool
 }
 
+func ReadMyGeneralLogAndGenJson(cfg *ConfCmd) {
+	var (
+		line      string
+		err       error
+		fh        *os.File
+		bufFh     *bufio.Reader
+		ok        bool
+		arr       []string
+		command   string
+		sqlStr    string
+		sqlStrAll string
+		ifInSql   bool = false
+		sqlType   string
+		sqlIdx    int = 0
+		fileIdx   int = 1
+		jsonFile  string
+		jsonArr   []SqlInfo
+	)
+
+	fh, err = os.Open(cfg.MyGeneralLogFile)
+	if fh != nil {
+		defer fh.Close()
+	}
+	if err != nil {
+		gLogger.WriteToLogByFieldsErrorExtramsgExit(err, "fail to open file "+cfg.MyGeneralLogFile, logging.ERROR, ehand.ERR_FILE_OPEN)
+	}
+
+	bufFh = bufio.NewReader(fh)
+
+	for {
+
+		line, err = bufFh.ReadString('\n')
+		if err != nil {
+			if err.Error() == "EOF" {
+				gLogger.WriteToLogByFieldsNormalOnlyMsg("finish reading "+cfg.MyGeneralLogFile, logging.INFO)
+				break
+			} else {
+				gLogger.WriteToLogByFieldsErrorExtramsgExitCode(err, "error to read "+cfg.MyGeneralLogFile, logging.ERROR, ehand.ERR_FILE_READ)
+				break
+			}
+		}
+
+		line = strings.TrimSpace(line)
+		/*
+			if strings.Contains(line, "mysqld, Version:") || strings.HasSuffix(line, "started with:") {
+
+				continue
+			}
+			if strings.HasPrefix(line, "Tcp port:") || strings.HasPrefix(line, "Time") {
+
+				continue
+			}
+		*/
+
+		arr = gQueryReg.FindStringSubmatch(line)
+		if len(arr) == 0 {
+			if ifInSql {
+				sqlStrAll += "\n" + line
+			}
+			continue
+		}
+		if ifInSql {
+			ifInSql = false
+			sqlIdx++
+			jsonArr = append(jsonArr, SqlInfo{SqlStr: sqlStrAll, SqlType: sqlType})
+			if sqlIdx >= cfg.SqlCntPerJsonFile {
+				jsonFile = fmt.Sprintf("%s.%d", cfg.JsonFile, fileIdx)
+				err = myjson.DumpValueToJsonFile(jsonArr, jsonFile)
+				if err != nil {
+					gLogger.WriteToLogByFieldsErrorExtramsgExit(err, "error to write json file "+jsonFile, logging.ERROR, ehand.ERR_JSON_DUMP_FILE)
+				}
+				fileIdx++
+				sqlIdx = 0
+				jsonArr = []SqlInfo{}
+			}
+			sqlStrAll = ""
+		}
+
+		command = arr[1]
+		sqlStr = arr[2]
+		/*
+			2018-10-23T16:38:46.408496+08:00           57 Init DB   danny
+			2018-10-23T16:19:29.092785+08:00           58 Connect   danny@192.168.33.126 on danny using TCP/IP
+			2018-10-23T16:19:29.093165+08:00           58 Query     SET NAMES 'utf8' COLLATE 'utf8_general_ci'
+			2018-10-23T16:19:29.093383+08:00           58 Query     SET @@session.autocommit = ON
+			2018-10-23T16:19:29.093894+08:00           58 Query     set session wait_timeout = 3600
+			2018-10-23T16:19:29.094132+08:00           58 Query     set session lock_wait_timeout = 60
+			2018-10-23T16:19:29.094332+08:00           58 Query     set session innodb_lock_wait_timeout = 30
+		*/
+
+		if command != "Query" {
+			tmpArr := strings.Fields(sqlStr)
+			if command == "Init" {
+
+				if len(tmpArr) >= 2 {
+					if tmpArr[0] == "DB" {
+						sqlStr = "use " + tmpArr[1]
+						sqlType = cQuerySet
+					}
+				}
+
+			} else if command == "Connect" {
+				tArr := gConnectReg.FindStringSubmatch(sqlStr)
+				if len(tArr) == 2 {
+					sqlStr = "use " + tmpArr[1]
+					sqlType = cQuerySet
+				}
+			}
+			continue
+		}
+		if sqlType, ok = checkIfTargetTypes(sqlStr, cfg); !ok {
+			continue
+		}
+		ifInSql = true
+		sqlStrAll = sqlStr
+
+	}
+	if len(jsonArr) > 0 {
+		jsonFile = fmt.Sprintf("%s.%d", cfg.JsonFile, fileIdx)
+		err = myjson.DumpValueToJsonFile(jsonArr, jsonFile)
+		if err != nil {
+			gLogger.WriteToLogByFieldsErrorExtramsgExit(err, "error to write json file "+jsonFile, logging.ERROR, ehand.ERR_JSON_DUMP_FILE)
+		}
+	}
+
+}
+
+func ReadFromJsonFile(cfg *ConfCmd, sqlChan chan *SqlInfo) {
+	var (
+		jsonArr []*SqlInfo = []*SqlInfo{}
+		err     error
+	)
+	defer close(sqlChan)
+
+	gLogger.WriteToLogByFieldsNormalOnlyMsg("start thread to reading "+cfg.MyGeneralLogFile, logging.INFO)
+
+	err = myjson.ReadJsonFileIntoVar(&jsonArr, cfg.MyGeneralLogFile)
+	if err != nil {
+		gLogger.WriteToLogByFieldsErrorExtramsgExit(err, "error to read and parse "+cfg.MyGeneralLogFile, logging.ERROR, ehand.ERR_JSON_FROM_FILE)
+	}
+
+	for _, onsSql := range jsonArr {
+		sqlChan <- onsSql
+	}
+
+}
+
 func ReadMyGeneralLog(cfg *ConfCmd, sqlChan chan *SqlInfo, db *sql.DB) {
 	var (
 		line      string
@@ -47,6 +195,7 @@ func ReadMyGeneralLog(cfg *ConfCmd, sqlChan chan *SqlInfo, db *sql.DB) {
 		sqlStrAll string
 		ifInSql   bool = false
 		sqlType   string
+		startTime int64
 	)
 	defer close(sqlChan)
 
@@ -60,7 +209,11 @@ func ReadMyGeneralLog(cfg *ConfCmd, sqlChan chan *SqlInfo, db *sql.DB) {
 	gLogger.WriteToLogByFieldsNormalOnlyMsg("start thread to reading "+cfg.MyGeneralLogFile, logging.INFO)
 
 	bufFh = bufio.NewReader(fh)
+	startTime = time.Now().Unix()
 	for {
+		if time.Now().Unix()-startTime >= cfg.RunTimes {
+			break
+		}
 		line, err = bufFh.ReadString('\n')
 		if err != nil {
 			if err.Error() == "EOF" {
@@ -101,7 +254,7 @@ func ReadMyGeneralLog(cfg *ConfCmd, sqlChan chan *SqlInfo, db *sql.DB) {
 		sqlStr = arr[2]
 		/*
 			2018-10-23T16:38:46.408496+08:00           57 Init DB   danny
-			2018-10-23T16:19:29.092785+08:00           58 Connect   danny@xx.xx.xx.xx on danny using TCP/IP
+			2018-10-23T16:19:29.092785+08:00           58 Connect   danny@192.168.33.126 on danny using TCP/IP
 			2018-10-23T16:19:29.093165+08:00           58 Query     SET NAMES 'utf8' COLLATE 'utf8_general_ci'
 			2018-10-23T16:19:29.093383+08:00           58 Query     SET @@session.autocommit = ON
 			2018-10-23T16:19:29.093894+08:00           58 Query     set session wait_timeout = 3600
@@ -207,6 +360,9 @@ func ReplaySql(threadIdx uint, sqlChan chan *SqlInfo, statsChan chan *RunningInf
 			} else {
 				ifErr = false
 			}
+		}
+		if sqlInfo.SqlType == cQuerySet {
+			continue
 		}
 		statsChan <- &RunningInfo{SqlType: sqlInfo.SqlType, TimeSpent: lapsTime, IfErr: ifErr}
 

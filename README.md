@@ -4,7 +4,10 @@
 ![myreplay](https://github.com/GoDannyLai/myreplay/raw/master/misc/img/myreplay.png)
 
 # 使用
-	./myreplay -H 127.0.0.1 -P 3307 -u xx -p xx -d db1 -s dml -c utf8 -i 5 -t 2 genlog.log
+  先进行预处理， 生成json文件, 每个json文件包含1000000条SQL:
+  ./myreplay -j genlog.json -C 1000000 genlog.log
+  从上面生成的json文件读入应用到mysql:
+	./myreplay -H 127.0.0.1 -P 3307 -u xx -p xx -d db1 -s dml -c utf8 -i 5 -t 2 -r 600 -J genlog.json.1
 	自行调整相应的参数
 # 限制
 	对于像set names utf8这类设置环境变量的SQL跳过不执行。对于不使用db.tb绝对表路径的SQL， 在多线程跑时可能会出错， 
